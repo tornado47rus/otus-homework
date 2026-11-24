@@ -1,0 +1,71 @@
+---
+- name: Мониторинг для домашки
+  hosts: all
+  become: true
+
+  vars:
+    project_dir: /vagrant/homework
+    images:
+      - quay.io/prometheus/prometheus:v3.16.0
+      - quay.io/prometheus/node-exporter:v1.9.1
+      - grafana/grafana:13.3.1
+
+  tasks:
+    - name: Установить Docker и плагин compose
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - docker-compose-v2
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Прописать зеркала Docker Hub
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "registry-mirrors": [
+              "https://mirror.gcr.io",
+              "https://dockerhub.timeweb.cloud"
+            ]
+          }
+        mode: "0644"
+      notify: Перезапустить Docker
+
+    - name: Docker запущен и в автозагрузке
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Добавить vagrant в группу docker
+      ansible.builtin.user:
+        name: vagrant
+        groups: docker
+        append: true
+
+    - name: Применить отложенные перезапуски до скачивания образов
+      ansible.builtin.meta: flush_handlers
+
+    - name: Скачать образы (с таймаутом и повторами)
+      ansible.builtin.command: docker pull {{ item }}
+      loop: "{{ images }}"
+      register: pull
+      changed_when: "'Downloaded newer image' in pull.stdout"
+      timeout: 600
+      retries: 3
+      delay: 15
+      until: pull is succeeded
+
+    - name: Поднять Prometheus, Grafana и node_exporter
+      community.docker.docker_compose_v2:
+        project_src: "{{ project_dir }}"
+        state: present
+        pull: never
+
+  handlers:
+    - name: Перезапустить Docker
+      ansible.builtin.service:
+        name: docker
+        state: restarted
